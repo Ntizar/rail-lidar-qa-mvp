@@ -155,8 +155,11 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
         cross = cross[corridor_mask]
         z_corridor = z_all[corridor_mask]
         rgb_corridor = rgb_all[corridor_mask]
+        local_base_z = float(np.percentile(z_corridor, 1)) if z_corridor.size else float(mins[2])
+        local_z_range = float(np.percentile(z_corridor, 99) - np.percentile(z_corridor, 1)) if z_corridor.size else float(maxs[2] - mins[2])
         semantic_labels = _segment_corridor_points(rgb_corridor, z_corridor, cross)
-        rail_model = _build_rail_model(along, cross, z_corridor, semantic_labels, mins[2], effective_length)
+        rail_model = _build_rail_model(along, cross, z_corridor, semantic_labels, local_base_z, effective_length, effective_width)
+        drone_density = _build_drone_density_points(rail_model)
 
         counts = np.zeros((rows, cols), dtype=np.int64)
         z_min = np.full((rows, cols), np.inf, dtype=float)
@@ -169,7 +172,7 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
             np.minimum.at(z_min, (row_indexes, col_indexes), z_corridor)
             np.maximum.at(z_max, (row_indexes, col_indexes), z_corridor)
 
-            xyz = np.column_stack((along, z_corridor - mins[2], cross))
+            xyz = np.column_stack((along, z_corridor - local_base_z, cross))
             sample_xyz.append(xyz.astype(np.float32))
             sample_rgb.append(_semantic_colors(semantic_labels).astype(np.uint8))
             sample_segments.append(semantic_labels.astype("U16"))
@@ -182,12 +185,12 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
             grid_size=params.grid_size,
             roi_length=effective_length,
             roi_width=effective_width,
-            base_z=mins[2],
+            base_z=local_base_z,
         )
 
         area = max((maxs[0] - mins[0]) * (maxs[1] - mins[1]), 1.0)
         roi_area = max(effective_length * effective_width, 1.0)
-        paths, optimizer = _build_drone_paths(effective_length, effective_width, float(maxs[2] - mins[2]), grid_cells)
+        paths, optimizer = _build_drone_paths(effective_length, effective_width, local_z_range, grid_cells)
         tamping = _build_tamper_simulation(effective_length, anomaly, rail_model)
         gnss = _build_gnss_model()
         report = _build_report(
@@ -215,11 +218,12 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
                 "normal": _round_list(track_normal),
                 "angleDeg": round(math.degrees(track_angle), 3),
                 "gaugeM": 1.435,
-                "method": "Preset cartografico 4212 + PCA/normalizacion de corredor LiDAR: via alineada al tramo visible de 200 m",
+                "method": "Preset cartografico 4212 + ajuste curvo por ventanas: via alineada a la banda de menor rugosidad del corredor",
                 "label": str(preset.get("label", "Tramo LiDAR central")) if preset else "Tramo LiDAR central",
                 "railModel": rail_model,
             },
             "tamping": tamping,
+            "droneDensity": drone_density,
             "optimizer": optimizer,
             "gnss": gnss,
             "report": report,
@@ -240,7 +244,8 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
                     "length": round(effective_length, 3),
                     "width": round(effective_width, 3),
                 },
-                "zRange": round(float(maxs[2] - mins[2]), 3),
+                "zRange": round(local_z_range, 3),
+                "localBaseZ": round(local_base_z, 3),
                 "areaM2": round(float(area), 2),
                 "densityM2": round(float(point_count / area), 3),
                 "roiDensityM2": round(float(roi_count / roi_area), 3),
@@ -255,7 +260,6 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
         }
 
     return result
-
 
 def write_analysis_json(result: dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -413,40 +417,59 @@ def _build_rail_model(
     labels: np.ndarray,
     base_z: float,
     roi_length: float,
+    roi_width: float,
 ) -> dict[str, Any]:
     if along.size == 0:
         return _fallback_rail_model(roi_length)
 
-    candidate_mask = np.isin(labels, ["rail_platform", "ballast", "shadow"]) & (np.abs(cross) < 16.0)
-    if np.count_nonzero(candidate_mask) < 50:
-        candidate_mask = np.abs(cross) < 16.0
-
-    candidate_cross = cross[candidate_mask]
-    center_cross = float(np.median(candidate_cross)) if candidate_cross.size else 0.0
-    rail_band = np.abs(cross - center_cross) < 7.0
-    rail_labels = np.isin(labels, ["rail_platform", "ballast", "shadow"])
-    profile_mask = rail_band & rail_labels
-    if np.count_nonzero(profile_mask) < 50:
-        profile_mask = rail_band
-
     bins = np.linspace(-roi_length / 2.0, roi_length / 2.0, 31)
-    profile: list[list[float]] = []
-    fallback_y = float(np.percentile(z_values[profile_mask], 22) - base_z) if np.count_nonzero(profile_mask) else 0.0
+    cross_bins = np.linspace(-roi_width / 2.0, roi_width / 2.0, 65)
+    raw_centers: list[float] = []
+    raw_y: list[float] = []
+
     for start, end in zip(bins[:-1], bins[1:], strict=True):
-        mask = profile_mask & (along >= start) & (along < end)
+        longitudinal = (along >= start) & (along < end)
+        best_score = -1e9
+        best_center = 0.0
+        best_y = None
+        for cross_start, cross_end in zip(cross_bins[:-1], cross_bins[1:], strict=True):
+            lateral = (cross >= cross_start) & (cross < cross_end)
+            mask = longitudinal & lateral
+            count = int(np.count_nonzero(mask))
+            if count < 6:
+                continue
+            local_labels = labels[mask]
+            local_z = z_values[mask]
+            platform_ratio = float(np.mean(np.isin(local_labels, ["rail_platform", "ballast", "shadow"])))
+            vegetation_ratio = float(np.mean(local_labels == "vegetation"))
+            z_spread = float(np.percentile(local_z, 85) - np.percentile(local_z, 15))
+            center_bias = abs((cross_start + cross_end) / 2.0) / max(roi_width / 2.0, 1.0)
+            score = platform_ratio * 5.0 + min(count, 80) / 80.0 - vegetation_ratio * 4.0 - z_spread * 0.42 - center_bias * 0.35
+            if score > best_score:
+                best_score = score
+                best_center = float((cross_start + cross_end) / 2.0)
+                best_y = float(np.percentile(local_z, 18) - base_z)
+
+        raw_centers.append(best_center)
+        raw_y.append(best_y if best_y is not None else np.nan)
+
+    center_values = _smooth_series(np.array(raw_centers, dtype=float), window=5)
+    y_values = _fill_and_smooth(np.array(raw_y, dtype=float), fallback=float(np.percentile(z_values, 18) - base_z), window=5)
+    profile: list[list[float]] = []
+    for index, (start, end) in enumerate(zip(bins[:-1], bins[1:], strict=True)):
         center_along = float((start + end) / 2.0)
-        if np.count_nonzero(mask) >= 4:
-            y_value = float(np.percentile(z_values[mask], 18) - base_z)
-        else:
-            y_value = fallback_y
-        profile.append([round(center_along, 3), round(y_value, 3), round(center_cross, 3)])
+        profile.append([round(center_along, 3), round(float(y_values[index]), 3), round(float(center_values[index]), 3)])
+
+    center_cross = float(np.median(center_values)) if center_values.size else 0.0
+    cross_section = _build_cross_section(along, cross, z_values, labels, base_z, profile, roi_width)
 
     return {
         "crossCenterM": round(center_cross, 3),
         "gaugeM": 1.435,
         "sleeperLengthM": 2.6,
         "profile": profile,
-        "source": "estimado desde puntos no vegetales de plataforma/balasto dentro del corredor",
+        "crossSection": cross_section,
+        "source": "curva suavizada estimada por ventanas longitudinales: banda no vegetal, estable y de baja rugosidad",
     }
 
 
@@ -457,7 +480,103 @@ def _fallback_rail_model(roi_length: float) -> dict[str, Any]:
         "gaugeM": 1.435,
         "sleeperLengthM": 2.6,
         "profile": profile,
+        "crossSection": {"stationM": 0.0, "terrain": [], "layers": []},
         "source": "fallback geometrico sin puntos suficientes",
+    }
+
+
+def _smooth_series(values: np.ndarray, window: int = 5) -> np.ndarray:
+    if values.size == 0:
+        return values
+    pad = window // 2
+    padded = np.pad(values, (pad, pad), mode="edge")
+    kernel = np.ones(window, dtype=float) / window
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def _fill_and_smooth(values: np.ndarray, fallback: float, window: int = 5) -> np.ndarray:
+    if values.size == 0:
+        return values
+    filled = values.copy()
+    finite = np.isfinite(filled)
+    if not np.any(finite):
+        filled[:] = fallback
+    else:
+        indexes = np.arange(filled.size)
+        filled[~finite] = np.interp(indexes[~finite], indexes[finite], filled[finite])
+    return _smooth_series(filled, window=window)
+
+
+def _build_cross_section(
+    along: np.ndarray,
+    cross: np.ndarray,
+    z_values: np.ndarray,
+    labels: np.ndarray,
+    base_z: float,
+    profile: list[list[float]],
+    roi_width: float,
+) -> dict[str, Any]:
+    station_index = len(profile) // 2
+    station = float(profile[station_index][0])
+    rail_y = float(profile[station_index][1])
+    rail_cross = float(profile[station_index][2])
+    station_mask = np.abs(along - station) < 8.0
+    terrain_points: list[list[float]] = []
+    for start, end in zip(np.linspace(-roi_width / 2.0, roi_width / 2.0, 41)[:-1], np.linspace(-roi_width / 2.0, roi_width / 2.0, 41)[1:], strict=True):
+        mask = station_mask & (cross >= start) & (cross < end)
+        center = float((start + end) / 2.0)
+        if np.count_nonzero(mask) >= 3:
+            y_value = float(np.percentile(z_values[mask], 10) - base_z)
+            local_labels = labels[mask]
+            vegetation_pct = float(np.mean(local_labels == "vegetation") * 100.0)
+        else:
+            y_value = rail_y - 1.8 - min(abs(center - rail_cross), 26.0) * 0.035
+            vegetation_pct = 0.0
+        terrain_points.append([round(center, 3), round(y_value, 3), round(vegetation_pct, 1)])
+
+    layers = [
+        {"name": "carriles UIC", "topWidthM": 1.435, "bottomWidthM": 1.435, "thicknessM": 0.18, "topY": round(rail_y + 0.18, 3), "color": "#313836"},
+        {"name": "traviesa", "topWidthM": 2.6, "bottomWidthM": 2.6, "thicknessM": 0.18, "topY": round(rail_y + 0.02, 3), "color": "#7b7067"},
+        {"name": "balasto", "topWidthM": 4.2, "bottomWidthM": 6.2, "thicknessM": 0.35, "topY": round(rail_y - 0.08, 3), "color": "#b2945b"},
+        {"name": "subbalasto", "topWidthM": 6.2, "bottomWidthM": 7.6, "thicknessM": 0.30, "topY": round(rail_y - 0.43, 3), "color": "#d88925"},
+        {"name": "capa de forma", "topWidthM": 7.6, "bottomWidthM": 10.0, "thicknessM": 0.35, "topY": round(rail_y - 0.73, 3), "color": "#8b7a50"},
+    ]
+    return {
+        "stationM": round(station, 3),
+        "centerCrossM": round(rail_cross, 3),
+        "terrain": terrain_points,
+        "layers": layers,
+        "note": "seccion transversal a escala apoyada en percentil bajo del terreno LiDAR",
+    }
+
+
+def _build_drone_density_points(rail_model: dict[str, Any]) -> dict[str, Any]:
+    profile = rail_model.get("profile", [])
+    if not profile:
+        return {"points": [], "beforeDensityPtsM2": 7.57, "afterDensityPtsM2": 22.4, "accuracyBeforeMm": 72, "accuracyAfterMm": 30}
+    rng = np.random.default_rng(42)
+    densified: list[list[float | int]] = []
+    for point in profile:
+        along, y_value, cross_center = float(point[0]), float(point[1]), float(point[2])
+        for offset in np.linspace(-5.5, 5.5, 9):
+            for _ in range(3):
+                densified.append(
+                    [
+                        round(along + float(rng.normal(0, 0.85)), 3),
+                        round(y_value + 0.22 + float(rng.normal(0, 0.025)), 3),
+                        round(cross_center + offset + float(rng.normal(0, 0.18)), 3),
+                        22,
+                        119,
+                        255,
+                    ]
+                )
+    return {
+        "points": densified,
+        "beforeDensityPtsM2": 7.57,
+        "afterDensityPtsM2": 22.4,
+        "accuracyBeforeMm": 72,
+        "accuracyAfterMm": 30,
+        "message": "Las pasadas simuladas agregan observaciones locales y reducen el error esperado por fusion multi-vista.",
     }
 
 

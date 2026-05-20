@@ -48,10 +48,12 @@ const pointGroup = new THREE.Group();
 const gridGroup = new THREE.Group();
 const pathGroup = new THREE.Group();
 const droneGroup = new THREE.Group();
+const droneDensityGroup = new THREE.Group();
 const railGroup = new THREE.Group();
+const railSectionGroup = new THREE.Group();
 const tamperGroup = new THREE.Group();
 const anomalyGroup = new THREE.Group();
-scene.add(rootGroup, gridGroup, pathGroup, droneGroup, railGroup, tamperGroup, anomalyGroup);
+scene.add(rootGroup, gridGroup, pathGroup, droneGroup, droneDensityGroup, railGroup, railSectionGroup, tamperGroup, anomalyGroup);
 rootGroup.add(pointGroup);
 
 const controls = {
@@ -203,13 +205,17 @@ function drawScene(data) {
   clearGroup(gridGroup);
   clearGroup(pathGroup);
   clearGroup(droneGroup);
+  clearGroup(droneDensityGroup);
   clearGroup(railGroup);
+  clearGroup(railSectionGroup);
   clearGroup(tamperGroup);
   clearGroup(anomalyGroup);
 
   createPointCloud(data.points);
   createGrid(data.grid);
   createRailOverlay(data.metrics.roi.length, data.metrics.roi.width, data.track?.railModel);
+  createRailCrossSection(data.track?.railModel?.crossSection);
+  createDroneDensity(data.droneDensity);
   createTamper(data.tamping);
   createAnomalyMarker(data.metrics.anomaly);
   drawPathsAndDrones(data.paths);
@@ -310,24 +316,19 @@ function createRailOverlay(length, width, railModel = null) {
   railGroup.add(ballastStrip);
 
   for (const offset of [-gauge / 2, gauge / 2]) {
-    for (let i = 0; i < profile.length - 1; i += 1) {
-      const start = toRailVector(profile[i], offset);
-      const end = toRailVector(profile[i + 1], offset);
-      const lengthSegment = Math.max(start.distanceTo(end), 0.1);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(lengthSegment, 0.18, 0.12), railMaterial);
-      rail.position.copy(start).add(end).multiplyScalar(0.5);
-      rail.lookAt(end);
-      rail.rotation.y = 0;
-      rail.castShadow = true;
-      railGroup.add(rail);
-    }
+    const curvePoints = profile.map((point) => toRailVector(point, offset));
+    const curve = new THREE.CatmullRomCurve3(curvePoints);
+    const rail = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(32, profile.length * 3), 0.07, 8, false), railMaterial);
+    rail.castShadow = true;
+    railGroup.add(rail);
   }
 
   const sleeperGeometry = new THREE.BoxGeometry(0.24, 0.12, sleeperLength);
   for (let i = 0; i < sleeperCount; i += 1) {
     const sleeper = new THREE.Mesh(sleeperGeometry, sleeperMaterial);
     const along = -railLength / 2 + i * (railLength / Math.max(sleeperCount - 1, 1));
-    sleeper.position.set(along, profileY(profile, along) + 0.02, crossCenter);
+    const center = profilePoint(profile, along);
+    sleeper.position.set(along, center[1] * 1.35 + 0.04, center[2]);
     railGroup.add(sleeper);
   }
   const corridorMaterial = new THREE.LineBasicMaterial({ color: 0x49534f, transparent: true, opacity: 0.55 });
@@ -344,6 +345,71 @@ function createRailOverlay(length, width, railModel = null) {
   railGroup.add(corridor);
 }
 
+function createRailCrossSection(crossSection) {
+  if (!crossSection?.terrain?.length) return;
+  const station = crossSection.stationM ?? 0;
+  const center = crossSection.centerCrossM ?? 0;
+  const terrainMaterial = new THREE.LineBasicMaterial({ color: 0x00a84f, linewidth: 2 });
+  const terrainPoints = crossSection.terrain.map((point) => new THREE.Vector3(station, point[1] * 1.35 + 0.04, point[0]));
+  railSectionGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(terrainPoints), terrainMaterial));
+
+  for (const layer of [...crossSection.layers].reverse()) {
+    const top = layer.topY * 1.35;
+    const bottom = (layer.topY - layer.thicknessM) * 1.35;
+    const topHalf = layer.topWidthM / 2;
+    const bottomHalf = layer.bottomWidthM / 2;
+    const vertices = new Float32Array([
+      station, top, center - topHalf,
+      station, top, center + topHalf,
+      station, bottom, center + bottomHalf,
+      station, bottom, center - bottomHalf,
+    ]);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    geometry.setIndex([0, 1, 2, 0, 2, 3]);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(layer.color), transparent: true, opacity: 0.74, side: THREE.DoubleSide })
+    );
+    railSectionGroup.add(mesh);
+  }
+
+  const markerMaterial = new THREE.LineDashedMaterial({ color: 0x111111, dashSize: 0.9, gapSize: 0.5 });
+  const marker = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(station, profileY([[station, crossSection.layers[0].topY, center]], station) - 5, center),
+      new THREE.Vector3(station, profileY([[station, crossSection.layers[0].topY, center]], station) + 10, center),
+    ]),
+    markerMaterial
+  );
+  marker.computeLineDistances();
+  railSectionGroup.add(marker);
+}
+
+function createDroneDensity(density) {
+  if (!density?.points?.length) return;
+  const points = [...density.points].sort((a, b) => a[0] - b[0]);
+  const positions = new Float32Array(points.length * 3);
+  const colors = new Float32Array(points.length * 3);
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    positions[index * 3] = point[0];
+    positions[index * 3 + 1] = point[1] * 1.35;
+    positions[index * 3 + 2] = point[2];
+    colors[index * 3] = point[3] / 255;
+    colors[index * 3 + 1] = point[4] / 255;
+    colors[index * 3 + 2] = point[5] / 255;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setDrawRange(0, 0);
+  const cloud = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.8, vertexColors: true, transparent: true, opacity: 0.92 }));
+  cloud.userData.count = points.length;
+  droneDensityGroup.add(cloud);
+}
+
 function fallbackRailProfile(length) {
   return Array.from({ length: 31 }, (_, index) => {
     const x = -length / 2 + (length * index) / 30;
@@ -352,6 +418,10 @@ function fallbackRailProfile(length) {
 }
 
 function profileY(profile, along) {
+  return profilePoint(profile, along)[1] * 1.35 + 0.22;
+}
+
+function profilePoint(profile, along) {
   let nearest = profile[0];
   let best = Infinity;
   for (const point of profile) {
@@ -361,7 +431,7 @@ function profileY(profile, along) {
       best = distance;
     }
   }
-  return nearest[1] * 1.35 + 0.22;
+  return nearest;
 }
 
 function toRailVector(profilePoint, offset) {
@@ -437,7 +507,9 @@ function updateMetrics(metrics) {
 function updateProfessionalPanels(data) {
   modelFormula.textContent = `${data.optimizer.formula}. Objetivo: ${data.optimizer.objective}. Ganancia estimada: ${data.optimizer.coverageGainPct}%.`;
   gnssText.textContent = `${data.gnss.sovereignty} Precision: ${data.gnss.absoluteAccuracy}. Repetibilidad: ${data.gnss.relativeRepeatability}.`;
-  reportSummary.textContent = `${data.report.recommendation}. ${data.metrics.anomaly.message}`;
+  const density = data.droneDensity;
+  const densityText = density ? ` Densidad local simulada: ${density.beforeDensityPtsM2} -> ${density.afterDensityPtsM2} pts/m2; error esperado ${density.accuracyBeforeMm} -> ${density.accuracyAfterMm} mm.` : '';
+  reportSummary.textContent = `${data.report.recommendation}. ${data.metrics.anomaly.message}${densityText}`;
   const railModel = data.track?.railModel;
   railModelText.textContent = railModel
     ? `Centro transversal ${railModel.crossCenterM} m, ancho UIC ${railModel.gaugeM} m. Fuente: ${railModel.source}.`
@@ -497,6 +569,7 @@ function updateOperationalAnimation(elapsed) {
   const progress = (elapsed * 0.08) % 1;
   updateTamper(progress);
   updateGridError(progress);
+  updateDroneDensity(progress);
 }
 
 function updateTamper(progress) {
@@ -518,6 +591,13 @@ function updateGridError(progress) {
     cellMesh.material.color.setHex(colorForError(error));
     cellMesh.material.opacity = cell.anomaly && localProgress > 0.6 ? 0.72 : 0.28 + localProgress * 0.16;
   }
+}
+
+function updateDroneDensity(progress) {
+  const densityCloud = droneDensityGroup.children[0];
+  if (!densityCloud?.geometry) return;
+  const count = densityCloud.userData.count ?? 0;
+  densityCloud.geometry.setDrawRange(0, Math.floor(count * progress));
 }
 
 function colorForError(errorMm) {
