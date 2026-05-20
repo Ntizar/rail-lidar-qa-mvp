@@ -11,7 +11,18 @@ import laspy
 import numpy as np
 
 
-DEFAULT_LAZ_NAME = "PNOA_2020_AND-C_364-4210_ORT-CLA-RGB.laz"
+DEFAULT_LAZ_NAME = "PNOA_2020_AND-C_364-4212_ORT-CLA-IRC.laz"
+
+TILE_PRESETS: dict[str, dict[str, float | str]] = {
+    "PNOA_2020_AND-C_364-4212_ORT-CLA-IRC.laz": {
+        "center_x": 365000.0,
+        "center_y": 4211120.0,
+        "axis_angle_deg": 14.5,
+        "roi_length": 200.0,
+        "roi_width": 80.0,
+        "label": "Corredor ferroviario Adamuz, tramo central de 200 m",
+    }
+}
 
 
 @dataclass(frozen=True)
@@ -19,8 +30,8 @@ class AnalysisParams:
     laz_path: Path
     max_points: int = 70000
     grid_size: float = 4.0
-    roi_length: float = 80.0
-    roi_width: float = 40.0
+    roi_length: float = 200.0
+    roi_width: float = 80.0
 
 
 def _status_from_error(error_mm: float) -> str:
@@ -52,15 +63,19 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
         maxs = np.array(header.maxs, dtype=float)
         point_count = int(header.point_count)
 
-        center_x = float((mins[0] + maxs[0]) / 2.0)
-        center_y = float((mins[1] + maxs[1]) / 2.0)
-        roi_min_x = center_x - params.roi_length / 2.0
-        roi_max_x = center_x + params.roi_length / 2.0
-        roi_min_y = center_y - params.roi_width / 2.0
-        roi_max_y = center_y + params.roi_width / 2.0
+        preset = _get_tile_preset(laz_path.name)
+        effective_length = float(preset.get("roi_length", params.roi_length)) if preset else params.roi_length
+        effective_width = float(preset.get("roi_width", params.roi_width)) if preset else params.roi_width
+        center_x = float(preset.get("center_x", (mins[0] + maxs[0]) / 2.0)) if preset else float((mins[0] + maxs[0]) / 2.0)
+        center_y = float(preset.get("center_y", (mins[1] + maxs[1]) / 2.0)) if preset else float((mins[1] + maxs[1]) / 2.0)
+        search_half = max(effective_length, effective_width) * 0.65
+        roi_min_x = center_x - search_half
+        roi_max_x = center_x + search_half
+        roi_min_y = center_y - search_half
+        roi_max_y = center_y + search_half
 
-        cols = max(1, int(math.ceil(params.roi_length / params.grid_size)))
-        rows = max(1, int(math.ceil(params.roi_width / params.grid_size)))
+        cols = max(1, int(math.ceil(effective_length / params.grid_size)))
+        rows = max(1, int(math.ceil(effective_width / params.grid_size)))
         raw_x: list[np.ndarray] = []
         raw_y: list[np.ndarray] = []
         raw_z: list[np.ndarray] = []
@@ -114,9 +129,9 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
             z_all = np.array([], dtype=np.float64)
             rgb_all = np.empty((0, 3), dtype=np.uint8)
 
-        track_axis, track_normal, track_angle = _fit_track_axis(x_all, y_all)
+        track_axis, track_normal, track_angle = _fit_track_axis(x_all, y_all, preset)
         along, cross = _project_to_corridor(x_all, y_all, center_x, center_y, track_axis, track_normal)
-        corridor_mask = (np.abs(along) <= params.roi_length / 2.0) & (np.abs(cross) <= params.roi_width / 2.0)
+        corridor_mask = (np.abs(along) <= effective_length / 2.0) & (np.abs(cross) <= effective_width / 2.0)
         along = along[corridor_mask]
         cross = cross[corridor_mask]
         z_corridor = z_all[corridor_mask]
@@ -127,8 +142,8 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
         z_max = np.full((rows, cols), -np.inf, dtype=float)
 
         if along.size:
-            col_indexes = np.clip(((along + params.roi_length / 2.0) / params.grid_size).astype(np.int64), 0, cols - 1)
-            row_indexes = np.clip(((cross + params.roi_width / 2.0) / params.grid_size).astype(np.int64), 0, rows - 1)
+            col_indexes = np.clip(((along + effective_length / 2.0) / params.grid_size).astype(np.int64), 0, cols - 1)
+            row_indexes = np.clip(((cross + effective_width / 2.0) / params.grid_size).astype(np.int64), 0, rows - 1)
             np.add.at(counts, (row_indexes, col_indexes), 1)
             np.minimum.at(z_min, (row_indexes, col_indexes), z_corridor)
             np.maximum.at(z_max, (row_indexes, col_indexes), z_corridor)
@@ -143,15 +158,15 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
             z_min=z_min,
             z_max=z_max,
             grid_size=params.grid_size,
-            roi_length=params.roi_length,
-            roi_width=params.roi_width,
+            roi_length=effective_length,
+            roi_width=effective_width,
             base_z=mins[2],
         )
 
         area = max((maxs[0] - mins[0]) * (maxs[1] - mins[1]), 1.0)
-        roi_area = max(params.roi_length * params.roi_width, 1.0)
-        paths, optimizer = _build_drone_paths(params.roi_length, params.roi_width, float(maxs[2] - mins[2]), grid_cells)
-        tamping = _build_tamper_simulation(params.roi_length, anomaly)
+        roi_area = max(effective_length * effective_width, 1.0)
+        paths, optimizer = _build_drone_paths(effective_length, effective_width, float(maxs[2] - mins[2]), grid_cells)
+        tamping = _build_tamper_simulation(effective_length, anomaly)
         gnss = _build_gnss_model()
         report = _build_report(
             laz_path.name,
@@ -178,7 +193,8 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
                 "normal": _round_list(track_normal),
                 "angleDeg": round(math.degrees(track_angle), 3),
                 "gaugeM": 1.435,
-                "method": "PCA 2D sobre ROI LiDAR: maximizacion de varianza longitudinal del corredor",
+                "method": "Preset cartografico 4212 + PCA/normalizacion de corredor LiDAR: via alineada al tramo visible de 200 m",
+                "label": str(preset.get("label", "Tramo LiDAR central")) if preset else "Tramo LiDAR central",
             },
             "tamping": tamping,
             "optimizer": optimizer,
@@ -198,8 +214,8 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
                     "center": _round_list([center_x, center_y]),
                     "min": _round_list([roi_min_x, roi_min_y]),
                     "max": _round_list([roi_max_x, roi_max_y]),
-                    "length": round(params.roi_length, 3),
-                    "width": round(params.roi_width, 3),
+                    "length": round(effective_length, 3),
+                    "width": round(effective_width, 3),
                 },
                 "zRange": round(float(maxs[2] - mins[2]), 3),
                 "areaM2": round(float(area), 2),
@@ -230,6 +246,10 @@ def write_report_files(result: dict[str, Any], output_dir: Path) -> None:
     (output_dir / "informe_qa.html").write_text(html, encoding="utf-8")
 
 
+def _get_tile_preset(filename: str) -> dict[str, float | str] | None:
+    return TILE_PRESETS.get(filename)
+
+
 def _report_to_html(markdown: str) -> str:
     lines = []
     for raw_line in markdown.splitlines():
@@ -251,8 +271,15 @@ def _report_to_html(markdown: str) -> str:
 </head><body>{body}</body></html>"""
 
 
-def _fit_track_axis(x_values: np.ndarray, y_values: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    if x_values.size < 3:
+def _fit_track_axis(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    preset: dict[str, float | str] | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    if preset and "axis_angle_deg" in preset:
+        angle = math.radians(float(preset["axis_angle_deg"]))
+        axis = np.array([math.cos(angle), math.sin(angle)], dtype=float)
+    elif x_values.size < 3:
         axis = np.array([1.0, 0.0], dtype=float)
     else:
         xy = np.column_stack((x_values - np.mean(x_values), y_values - np.mean(y_values)))

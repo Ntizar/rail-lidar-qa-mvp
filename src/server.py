@@ -47,8 +47,8 @@ class RailLidarHandler(BaseHTTPRequestHandler):
         filename = _safe_filename(_first(query, "file", DEFAULT_LAZ_NAME))
         max_points = _int_param(query, "sample", 70000, 5000, 200000)
         grid_size = _float_param(query, "grid", 4.0, 1.0, 25.0)
-        roi_length = _float_param(query, "length", 80.0, 10.0, 250.0)
-        roi_width = _float_param(query, "width", 40.0, 10.0, 160.0)
+        roi_length = _float_param(query, "length", 200.0, 10.0, 300.0)
+        roi_width = _float_param(query, "width", 80.0, 10.0, 180.0)
 
         laz_path = (PROJECT_ROOT / filename).resolve()
         if laz_path.parent != PROJECT_ROOT.resolve() or laz_path.suffix.lower() not in {".las", ".laz"}:

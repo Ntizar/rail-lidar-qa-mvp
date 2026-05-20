@@ -80,7 +80,7 @@ async function init() {
   setupEvents();
   resizeRenderer();
   createGroundPlane();
-  createRailOverlay(80, 40);
+  createRailOverlay(200, 80);
   await loadFiles();
   animate();
 }

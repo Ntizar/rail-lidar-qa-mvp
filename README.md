@@ -6,9 +6,12 @@ Este repositorio contiene la base documental para una primera version de una her
 
 La idea del hackathon es simular un sistema de drones embarcados en una bateadora que revisan si una captura LiDAR se ha hecho correctamente. El sistema carga una nube de puntos `.laz`, construye una escena 3D sencilla y calcula metricas basicas de cobertura para decidir si el trabajo es aceptable o si hay zonas que deberian repetirse.
 
-Archivo de prueba incluido en el workspace:
+Archivos de prueba incluidos en el workspace:
 
 - `PNOA_2020_AND-C_364-4210_ORT-CLA-RGB.laz`
+- `PNOA_2020_AND-C_364-4212_ORT-CLA-IRC.laz`
+
+La demo actual usa por defecto `PNOA_2020_AND-C_364-4212_ORT-CLA-IRC.laz`, porque contiene un corredor ferroviario visible cerca de Adamuz. El recorte operativo se ha fijado en un tramo de 200 m de longitud por 80 m de anchura para incluir via, taludes y entorno inmediato.
 
 ## Objetivo
 
@@ -214,7 +217,7 @@ Despues abre `http://127.0.0.1:8000` en el navegador.
 
 ## Enfoque matematico implementado
 
-La herramienta no coloca la via a mano. Primero recorta el ROI del `.laz` y calcula el eje principal del corredor con PCA 2D sobre las coordenadas X/Y. Ese vector principal se usa como eje longitudinal de via, de forma que la via, la bateadora y las pasadas de dron se representan sobre la linea dominante de puntos.
+La herramienta no coloca la via en el centro del tile. Para el tile `4212` usa un preset cartografico del corredor ferroviario y despues normaliza el tramo en coordenadas longitudinales/transversales. Ese vector principal se usa como eje longitudinal de via, de forma que la via, la bateadora y las pasadas de dron se representan sobre la linea dominante del corredor.
 
 Modelo simplificado:
 
@@ -222,6 +225,16 @@ Modelo simplificado:
 eje_via = autovector_principal(covarianza(X, Y))
 s = proyeccion longitudinal sobre eje_via
 d = proyeccion transversal sobre normal_via
+```
+
+En la demo actual:
+
+```text
+tile = PNOA_2020_AND-C_364-4212_ORT-CLA-IRC.laz
+centro ETRS89/UTM = 365000.0, 4211120.0
+orientacion aproximada = 14.5 grados
+longitud analizada = 200 m
+anchura analizada = 80 m
 ```
 
 Cada celda de la rejilla tiene un error antes y despues del paso de bateadora. Las pasadas de dron reducen la incertidumbre segun:
