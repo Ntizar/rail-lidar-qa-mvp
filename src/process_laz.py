@@ -18,9 +18,9 @@ TILE_PRESETS: dict[str, dict[str, float | str]] = {
         "center_x": 365000.0,
         "center_y": 4211120.0,
         "axis_angle_deg": 14.5,
-        "roi_length": 200.0,
-        "roi_width": 80.0,
-        "label": "Corredor ferroviario Adamuz, tramo central de 200 m",
+        "roi_length": 900.0,
+        "roi_width": 240.0,
+        "label": "Corredor ferroviario Adamuz, tramo visible largo de 900 m",
     }
 }
 
@@ -781,11 +781,14 @@ def _build_tamper_simulation(roi_length: float, anomaly: dict[str, Any], rail_mo
     half_length = roi_length / 2.0
     profile = rail_model.get("profile", [])
     cross_center = float(rail_model.get("crossCenterM", 0.0))
-    y_value = float(profile[len(profile) // 2][1]) + 1.0 if profile else 1.0
+    if profile:
+        path = [[float(point[0]), float(point[1]) + 0.95, float(point[2])] for point in profile]
+    else:
+        path = [[-half_length, 1.0, cross_center], [half_length, 1.0, cross_center]]
     return {
         "name": "Bateadora 09-3X simulada",
         "speedMps": 0.65,
-        "path": [[-half_length, y_value, cross_center], [half_length, y_value, cross_center]],
+        "path": path,
         "workWindowM": 5.0,
         "before": {
             "trackGeometry": "desalineacion vertical y transversal moderada; balasto heterogeneo en flanco de talud",

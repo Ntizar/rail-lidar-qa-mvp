@@ -27,7 +27,7 @@ const semanticLegend = document.getElementById('semanticLegend');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xdce6e2);
-scene.fog = new THREE.Fog(0xdce6e2, 180, 420);
+scene.fog = new THREE.Fog(0xdce6e2, 650, 1600);
 
 const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 2000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -298,8 +298,8 @@ function createAnomalyMarker(anomaly) {
 }
 
 function createRailOverlay(length, width, railModel = null) {
-  const railLength = Math.min(Math.max(length, 20), 220);
-  const sleeperCount = Math.max(8, Math.floor(railLength / 2.4));
+  const railLength = Math.max(length, 20);
+  const sleeperCount = Math.max(12, Math.min(260, Math.floor(railLength / 4)));
   const profile = railModel?.profile?.length ? railModel.profile : fallbackRailProfile(railLength);
   const gauge = railModel?.gaugeM ?? 1.435;
   const crossCenter = railModel?.crossCenterM ?? 0;
@@ -349,29 +349,24 @@ function createRailCrossSection(crossSection) {
   if (!crossSection?.terrain?.length) return;
   const station = crossSection.stationM ?? 0;
   const center = crossSection.centerCrossM ?? 0;
-  const terrainMaterial = new THREE.LineBasicMaterial({ color: 0x00a84f, linewidth: 2 });
-  const terrainPoints = crossSection.terrain.map((point) => new THREE.Vector3(station, point[1] * 1.35 + 0.04, point[0]));
-  railSectionGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(terrainPoints), terrainMaterial));
+  const terrainPoints = crossSection.terrain.map((point) => new THREE.Vector3(station, point[1] * 1.35 + 0.07, point[0]));
+  const terrainCurve = new THREE.CatmullRomCurve3(terrainPoints);
+  const terrainTube = new THREE.Mesh(
+    new THREE.TubeGeometry(terrainCurve, Math.max(24, terrainPoints.length * 2), 0.09, 8, false),
+    new THREE.MeshBasicMaterial({ color: 0x00a84f })
+  );
+  railSectionGroup.add(terrainTube);
+
+  const slicePlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.08, Math.max(24, Math.abs(crossSection.terrain.at(-1)[0] - crossSection.terrain[0][0]))),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, side: THREE.DoubleSide })
+  );
+  slicePlane.rotation.y = Math.PI / 2;
+  slicePlane.position.set(station, Math.max(6, crossSection.layers[0].topY * 1.35 - 2.5), center);
+  railSectionGroup.add(slicePlane);
 
   for (const layer of [...crossSection.layers].reverse()) {
-    const top = layer.topY * 1.35;
-    const bottom = (layer.topY - layer.thicknessM) * 1.35;
-    const topHalf = layer.topWidthM / 2;
-    const bottomHalf = layer.bottomWidthM / 2;
-    const vertices = new Float32Array([
-      station, top, center - topHalf,
-      station, top, center + topHalf,
-      station, bottom, center + bottomHalf,
-      station, bottom, center - bottomHalf,
-    ]);
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    geometry.setIndex([0, 1, 2, 0, 2, 3]);
-    geometry.computeVertexNormals();
-    const mesh = new THREE.Mesh(
-      geometry,
-      new THREE.MeshBasicMaterial({ color: new THREE.Color(layer.color), transparent: true, opacity: 0.74, side: THREE.DoubleSide })
-    );
+    const mesh = createLayerPrism(station, center, layer);
     railSectionGroup.add(mesh);
   }
 
@@ -385,6 +380,39 @@ function createRailCrossSection(crossSection) {
   );
   marker.computeLineDistances();
   railSectionGroup.add(marker);
+}
+
+function createLayerPrism(station, center, layer) {
+  const top = layer.topY * 1.35;
+  const bottom = (layer.topY - layer.thicknessM) * 1.35;
+  const topHalf = layer.topWidthM / 2;
+  const bottomHalf = layer.bottomWidthM / 2;
+  const halfDepth = 0.55;
+  const vertices = new Float32Array([
+    station - halfDepth, top, center - topHalf,
+    station - halfDepth, top, center + topHalf,
+    station - halfDepth, bottom, center + bottomHalf,
+    station - halfDepth, bottom, center - bottomHalf,
+    station + halfDepth, top, center - topHalf,
+    station + halfDepth, top, center + topHalf,
+    station + halfDepth, bottom, center + bottomHalf,
+    station + halfDepth, bottom, center - bottomHalf,
+  ]);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+  geometry.setIndex([
+    0, 1, 2, 0, 2, 3,
+    4, 7, 6, 4, 6, 5,
+    0, 4, 5, 0, 5, 1,
+    1, 5, 6, 1, 6, 2,
+    2, 6, 7, 2, 7, 3,
+    3, 7, 4, 3, 4, 0,
+  ]);
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(layer.color), transparent: true, opacity: 0.84, roughness: 0.72, side: THREE.DoubleSide })
+  );
 }
 
 function createDroneDensity(density) {
@@ -536,7 +564,7 @@ function renderSemanticLegend(stats) {
 }
 
 function createGroundPlane() {
-  const geometry = new THREE.PlaneGeometry(500, 500, 1, 1);
+  const geometry = new THREE.PlaneGeometry(1800, 900, 1, 1);
   const material = new THREE.MeshStandardMaterial({ color: 0xcdd9d4, roughness: 0.95, metalness: 0.0 });
   const plane = new THREE.Mesh(geometry, material);
   plane.rotation.x = -Math.PI / 2;
@@ -546,7 +574,7 @@ function createGroundPlane() {
 
 function frameScene(length, width, zRange) {
   controls.target.set(0, Math.max(6, zRange * 0.5), 0);
-  controls.distance = Math.max(58, Math.min(180, Math.max(length, width) * 1.25));
+  controls.distance = Math.max(90, Math.min(980, Math.max(length, width) * 1.08));
   controls.yaw = -0.72;
   controls.pitch = 0.78;
 }
