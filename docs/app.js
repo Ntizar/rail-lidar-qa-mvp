@@ -137,12 +137,16 @@ function setupEvents() {
 async function loadFiles() {
   setStatus('Buscando archivos LAZ/LAS en la carpeta del proyecto...');
   let payload;
-  try {
+  if (isStaticDeployment()) {
+    payload = { files: ['sample_analysis.json'], default: 'sample_analysis.json', staticMode: true };
+  } else {
+    try {
     const response = await fetch('/api/files');
     if (!response.ok) throw new Error('API no disponible');
     payload = await response.json();
-  } catch {
-    payload = { files: ['sample_analysis.json'], default: 'sample_analysis.json', staticMode: true };
+    } catch {
+      payload = { files: ['sample_analysis.json'], default: 'sample_analysis.json', staticMode: true };
+    }
   }
   fileSelect.innerHTML = '';
   for (const file of payload.files) {
@@ -158,6 +162,10 @@ async function loadFiles() {
     return;
   }
   setStatus(payload.staticMode ? 'Demo estatica lista. Pulsa Analizar LAZ para cargar el gemelo preprocesado.' : 'Archivo detectado. Pulsa Analizar LAZ para generar el gemelo digital QA.');
+}
+
+function isStaticDeployment() {
+  return location.hostname.endsWith('github.io') || location.hostname.endsWith('vercel.app') || location.port === '9000';
 }
 
 async function analyzeCurrentFile() {
