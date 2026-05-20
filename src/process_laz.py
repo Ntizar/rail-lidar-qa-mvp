@@ -42,6 +42,24 @@ def _status_from_error(error_mm: float) -> str:
     return "red"
 
 
+SEMANTIC_COLORS: dict[str, tuple[int, int, int]] = {
+    "vegetation": (32, 132, 74),
+    "rail_platform": (38, 46, 52),
+    "ballast": (178, 148, 91),
+    "terrain": (126, 105, 76),
+    "shadow": (42, 65, 83),
+}
+
+
+SEMANTIC_LABELS: dict[str, str] = {
+    "vegetation": "Vegetacion/arbolado: respuesta NIR alta en imagen IRC",
+    "rail_platform": "Via/plataforma: banda lineal no vegetal sobre el eje estimado",
+    "ballast": "Balasto o explanacion: material claro y poco vegetado junto a la via",
+    "terrain": "Terreno/talud: suelo natural del entorno",
+    "shadow": "Sombra/agua/occlusion: baja reflectancia y mayor riesgo de huecos",
+}
+
+
 def find_laz_files(project_root: Path) -> list[str]:
     files = sorted(project_root.glob("*.la[sz]"))
     return [path.name for path in files]
@@ -83,6 +101,7 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
 
         sample_xyz: list[np.ndarray] = []
         sample_rgb: list[np.ndarray] = []
+        sample_segments: list[np.ndarray] = []
         roi_count = 0
         has_rgb = _header_has_rgb(header)
         sample_cap = max(params.max_points * 4, params.max_points)
@@ -136,6 +155,8 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
         cross = cross[corridor_mask]
         z_corridor = z_all[corridor_mask]
         rgb_corridor = rgb_all[corridor_mask]
+        semantic_labels = _segment_corridor_points(rgb_corridor, z_corridor, cross)
+        rail_model = _build_rail_model(along, cross, z_corridor, semantic_labels, mins[2], effective_length)
 
         counts = np.zeros((rows, cols), dtype=np.int64)
         z_min = np.full((rows, cols), np.inf, dtype=float)
@@ -150,9 +171,10 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
 
             xyz = np.column_stack((along, z_corridor - mins[2], cross))
             sample_xyz.append(xyz.astype(np.float32))
-            sample_rgb.append(rgb_corridor.astype(np.uint8))
+            sample_rgb.append(_semantic_colors(semantic_labels).astype(np.uint8))
+            sample_segments.append(semantic_labels.astype("U16"))
 
-        sample_points = _merge_and_downsample(sample_xyz, sample_rgb, params.max_points)
+        sample_points = _merge_and_downsample(sample_xyz, sample_rgb, sample_segments, params.max_points)
         grid_cells, qa_counts, qa_score, qa_status, anomaly = _build_grid_cells(
             counts=counts,
             z_min=z_min,
@@ -166,7 +188,7 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
         area = max((maxs[0] - mins[0]) * (maxs[1] - mins[1]), 1.0)
         roi_area = max(effective_length * effective_width, 1.0)
         paths, optimizer = _build_drone_paths(effective_length, effective_width, float(maxs[2] - mins[2]), grid_cells)
-        tamping = _build_tamper_simulation(effective_length, anomaly)
+        tamping = _build_tamper_simulation(effective_length, anomaly, rail_model)
         gnss = _build_gnss_model()
         report = _build_report(
             laz_path.name,
@@ -195,6 +217,7 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
                 "gaugeM": 1.435,
                 "method": "Preset cartografico 4212 + PCA/normalizacion de corredor LiDAR: via alineada al tramo visible de 200 m",
                 "label": str(preset.get("label", "Tramo LiDAR central")) if preset else "Tramo LiDAR central",
+                "railModel": rail_model,
             },
             "tamping": tamping,
             "optimizer": optimizer,
@@ -226,6 +249,8 @@ def analyze_laz(params: AnalysisParams) -> dict[str, Any]:
                 "qaScore": qa_score,
                 "qaStatus": qa_status,
                 "anomaly": anomaly,
+                "semanticStats": _semantic_stats(semantic_labels),
+                "semanticLegend": SEMANTIC_LABELS,
             },
         }
 
@@ -333,9 +358,113 @@ def _color_by_height(z_values: np.ndarray, min_z: float, max_z: float) -> np.nda
     return np.column_stack((red, green, blue))
 
 
+def _segment_corridor_points(rgb: np.ndarray, z_values: np.ndarray, cross: np.ndarray) -> np.ndarray:
+    if rgb.size == 0:
+        return np.array([], dtype="U16")
+
+    red = rgb[:, 0].astype(float)
+    green = rgb[:, 1].astype(float)
+    blue = rgb[:, 2].astype(float)
+    brightness = (red + green + blue) / 3.0
+    nir_excess = red - np.maximum(green, blue) * 0.88
+    z_relative = z_values - np.percentile(z_values, 12)
+
+    labels = np.full(rgb.shape[0], "terrain", dtype="U16")
+    vegetation = (nir_excess > 18.0) & (red > 70.0) & (z_relative > 0.35)
+    shadow = brightness < 34.0
+    platform_band = np.abs(cross) < 4.2
+    ballast_band = (np.abs(cross) >= 4.2) & (np.abs(cross) < 15.0)
+    non_vegetation = ~vegetation
+
+    labels[vegetation] = "vegetation"
+    labels[shadow & non_vegetation] = "shadow"
+    labels[ballast_band & non_vegetation & ~shadow] = "ballast"
+    labels[platform_band & non_vegetation] = "rail_platform"
+    return labels
+
+
+def _semantic_colors(labels: np.ndarray) -> np.ndarray:
+    colors = np.zeros((labels.size, 3), dtype=np.uint8)
+    for key, color in SEMANTIC_COLORS.items():
+        colors[labels == key] = color
+    if labels.size:
+        colors[np.all(colors == 0, axis=1)] = SEMANTIC_COLORS["terrain"]
+    return colors
+
+
+def _semantic_stats(labels: np.ndarray) -> dict[str, dict[str, float | int | str]]:
+    total = max(int(labels.size), 1)
+    stats: dict[str, dict[str, float | int | str]] = {}
+    for key, label in SEMANTIC_LABELS.items():
+        count = int(np.count_nonzero(labels == key))
+        stats[key] = {
+            "count": count,
+            "pct": round(count / total * 100.0, 1),
+            "label": label,
+            "color": "#%02x%02x%02x" % SEMANTIC_COLORS[key],
+        }
+    return stats
+
+
+def _build_rail_model(
+    along: np.ndarray,
+    cross: np.ndarray,
+    z_values: np.ndarray,
+    labels: np.ndarray,
+    base_z: float,
+    roi_length: float,
+) -> dict[str, Any]:
+    if along.size == 0:
+        return _fallback_rail_model(roi_length)
+
+    candidate_mask = np.isin(labels, ["rail_platform", "ballast", "shadow"]) & (np.abs(cross) < 16.0)
+    if np.count_nonzero(candidate_mask) < 50:
+        candidate_mask = np.abs(cross) < 16.0
+
+    candidate_cross = cross[candidate_mask]
+    center_cross = float(np.median(candidate_cross)) if candidate_cross.size else 0.0
+    rail_band = np.abs(cross - center_cross) < 7.0
+    rail_labels = np.isin(labels, ["rail_platform", "ballast", "shadow"])
+    profile_mask = rail_band & rail_labels
+    if np.count_nonzero(profile_mask) < 50:
+        profile_mask = rail_band
+
+    bins = np.linspace(-roi_length / 2.0, roi_length / 2.0, 31)
+    profile: list[list[float]] = []
+    fallback_y = float(np.percentile(z_values[profile_mask], 22) - base_z) if np.count_nonzero(profile_mask) else 0.0
+    for start, end in zip(bins[:-1], bins[1:], strict=True):
+        mask = profile_mask & (along >= start) & (along < end)
+        center_along = float((start + end) / 2.0)
+        if np.count_nonzero(mask) >= 4:
+            y_value = float(np.percentile(z_values[mask], 18) - base_z)
+        else:
+            y_value = fallback_y
+        profile.append([round(center_along, 3), round(y_value, 3), round(center_cross, 3)])
+
+    return {
+        "crossCenterM": round(center_cross, 3),
+        "gaugeM": 1.435,
+        "sleeperLengthM": 2.6,
+        "profile": profile,
+        "source": "estimado desde puntos no vegetales de plataforma/balasto dentro del corredor",
+    }
+
+
+def _fallback_rail_model(roi_length: float) -> dict[str, Any]:
+    profile = [[round(value, 3), 0.0, 0.0] for value in np.linspace(-roi_length / 2.0, roi_length / 2.0, 31)]
+    return {
+        "crossCenterM": 0.0,
+        "gaugeM": 1.435,
+        "sleeperLengthM": 2.6,
+        "profile": profile,
+        "source": "fallback geometrico sin puntos suficientes",
+    }
+
+
 def _merge_and_downsample(
     xyz_chunks: list[np.ndarray],
     rgb_chunks: list[np.ndarray],
+    segment_chunks: list[np.ndarray],
     max_points: int,
 ) -> list[list[float | int]]:
     if not xyz_chunks:
@@ -343,16 +472,18 @@ def _merge_and_downsample(
 
     xyz = np.concatenate(xyz_chunks, axis=0)
     rgb = np.concatenate(rgb_chunks, axis=0)
+    segments = np.concatenate(segment_chunks, axis=0) if segment_chunks else np.full(xyz.shape[0], "terrain", dtype="U16")
     if xyz.shape[0] > max_points:
         indexes = np.linspace(0, xyz.shape[0] - 1, max_points, dtype=np.int64)
         xyz = xyz[indexes]
         rgb = rgb[indexes]
+        segments = segments[indexes]
 
     xyz = np.round(xyz, 3)
     rgb = rgb.astype(np.int64)
     return [
-        [float(point[0]), float(point[1]), float(point[2]), int(color[0]), int(color[1]), int(color[2])]
-        for point, color in zip(xyz, rgb, strict=True)
+        [float(point[0]), float(point[1]), float(point[2]), int(color[0]), int(color[1]), int(color[2]), str(segment)]
+        for point, color, segment in zip(xyz, rgb, segments, strict=True)
     ]
 
 
@@ -465,11 +596,21 @@ def _build_drone_paths(
         "P3 - flanco izquierdo: cierre de sombras 21%",
         "P4 - adaptativa: minimiza error residual en celda critica",
     ]
+    objectives = [
+        "perfil longitudinal de carriles, traviesas y plataforma",
+        "talud derecho, cuneta y sombras de la banqueta",
+        "talud izquierdo, vegetacion proxima y cierre de huecos",
+        "revisita automatica de celdas rojas tras paso de bateadora",
+    ]
     colors = ["#1677ff", "#08a66c", "#f59f00", "#d9480f"]
     gains = [0.32, 0.24, 0.21, 0.38]
+    overlaps = [72, 64, 64, 84]
+    batteries = [91, 84, 78, 66]
     paths: list[dict[str, Any]] = []
     residual = 1.0
-    for index, (offset, height, label, color, gain) in enumerate(zip(offsets, heights, labels, colors, gains, strict=True), start=1):
+    for index, (offset, height, label, color, gain, objective, overlap, battery) in enumerate(
+        zip(offsets, heights, labels, colors, gains, objectives, overlaps, batteries, strict=True), start=1
+    ):
         residual *= 1.0 - gain
         if index == 4:
             points = [
@@ -484,7 +625,21 @@ def _build_drone_paths(
                 [half_length * 0.35, height + 2.0, offset],
                 [half_length, height, offset],
             ]
-        paths.append({"id": index, "name": label, "color": color, "points": points, "gain": gain, "residualFactor": round(residual, 3)})
+        paths.append(
+            {
+                "id": index,
+                "name": label,
+                "color": color,
+                "points": points,
+                "gain": gain,
+                "residualFactor": round(residual, 3),
+                "objective": objective,
+                "overlapPct": overlap,
+                "batteryPct": battery,
+                "altitudeM": round(height, 1),
+                "gnssMode": "Galileo HAS + EGNOS integridad + IMU",
+            }
+        )
     optimizer = {
         "objective": "min Σ(error_residual celda) con restricciones de bateria, solape y distancia a bateadora",
         "formula": "e_i,k+1 = max(e_floor, e_i,k * (1 - g_k * visibilidad_i,k)) + anomalia_i",
@@ -503,12 +658,15 @@ def _weighted_average(values: list[float], weights: list[float]) -> float:
     return float(sum(value * weight for value, weight in zip(values, weights, strict=True)) / total_weight)
 
 
-def _build_tamper_simulation(roi_length: float, anomaly: dict[str, Any]) -> dict[str, Any]:
+def _build_tamper_simulation(roi_length: float, anomaly: dict[str, Any], rail_model: dict[str, Any]) -> dict[str, Any]:
     half_length = roi_length / 2.0
+    profile = rail_model.get("profile", [])
+    cross_center = float(rail_model.get("crossCenterM", 0.0))
+    y_value = float(profile[len(profile) // 2][1]) + 1.0 if profile else 1.0
     return {
         "name": "Bateadora 09-3X simulada",
         "speedMps": 0.65,
-        "path": [[-half_length, 1.0, 0.0], [half_length, 1.0, 0.0]],
+        "path": [[-half_length, y_value, cross_center], [half_length, y_value, cross_center]],
         "workWindowM": 5.0,
         "before": {
             "trackGeometry": "desalineacion vertical y transversal moderada; balasto heterogeneo en flanco de talud",

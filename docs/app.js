@@ -20,8 +20,10 @@ const qaSubtitle = document.getElementById('qaSubtitle');
 const qaScore = document.getElementById('qaScore');
 const metricList = document.getElementById('metricList');
 const modelFormula = document.getElementById('modelFormula');
+const railModelText = document.getElementById('railModelText');
 const gnssText = document.getElementById('gnssText');
 const reportSummary = document.getElementById('reportSummary');
+const semanticLegend = document.getElementById('semanticLegend');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xdce6e2);
@@ -207,7 +209,7 @@ function drawScene(data) {
 
   createPointCloud(data.points);
   createGrid(data.grid);
-  createRailOverlay(data.metrics.roi.length, data.metrics.roi.width);
+  createRailOverlay(data.metrics.roi.length, data.metrics.roi.width, data.track?.railModel);
   createTamper(data.tamping);
   createAnomalyMarker(data.metrics.anomaly);
   drawPathsAndDrones(data.paths);
@@ -274,7 +276,7 @@ function createTamper(tamping) {
       group.add(wheel);
     }
   }
-  group.userData.path = tamping.path.map((point) => new THREE.Vector3(point[0], point[1], point[2]));
+  group.userData.path = tamping.path.map((point) => new THREE.Vector3(point[0], point[1] * 1.35, point[2]));
   tamperGroup.add(group);
 }
 
@@ -289,23 +291,43 @@ function createAnomalyMarker(anomaly) {
   anomalyGroup.add(ring);
 }
 
-function createRailOverlay(length, width) {
-  const railLength = Math.min(Math.max(length, 20), 120);
+function createRailOverlay(length, width, railModel = null) {
+  const railLength = Math.min(Math.max(length, 20), 220);
   const sleeperCount = Math.max(8, Math.floor(railLength / 2.4));
+  const profile = railModel?.profile?.length ? railModel.profile : fallbackRailProfile(railLength);
+  const gauge = railModel?.gaugeM ?? 1.435;
+  const crossCenter = railModel?.crossCenterM ?? 0;
+  const sleeperLength = railModel?.sleeperLengthM ?? 2.6;
   const railMaterial = new THREE.MeshStandardMaterial({ color: 0x313836, roughness: 0.7, metalness: 0.18 });
   const sleeperMaterial = new THREE.MeshStandardMaterial({ color: 0x7b7067, roughness: 0.9 });
-  const railGeometry = new THREE.BoxGeometry(railLength, 0.16, 0.1);
-  for (const offset of [-0.78, 0.78]) {
-    const rail = new THREE.Mesh(railGeometry, railMaterial);
-    rail.position.set(0, 0.22, offset);
-    rail.castShadow = true;
-    railGroup.add(rail);
+
+  const ballastStrip = new THREE.Mesh(
+    new THREE.PlaneGeometry(railLength, Math.max(5.5, sleeperLength + 2.4)),
+    new THREE.MeshBasicMaterial({ color: 0xb69a62, transparent: true, opacity: 0.26, side: THREE.DoubleSide })
+  );
+  ballastStrip.rotation.x = -Math.PI / 2;
+  ballastStrip.position.set(0, profileY(profile, 0) + 0.05, crossCenter);
+  railGroup.add(ballastStrip);
+
+  for (const offset of [-gauge / 2, gauge / 2]) {
+    for (let i = 0; i < profile.length - 1; i += 1) {
+      const start = toRailVector(profile[i], offset);
+      const end = toRailVector(profile[i + 1], offset);
+      const lengthSegment = Math.max(start.distanceTo(end), 0.1);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(lengthSegment, 0.18, 0.12), railMaterial);
+      rail.position.copy(start).add(end).multiplyScalar(0.5);
+      rail.lookAt(end);
+      rail.rotation.y = 0;
+      rail.castShadow = true;
+      railGroup.add(rail);
+    }
   }
-  const sleeperGeometry = new THREE.BoxGeometry(1.95, 0.12, 0.22);
+
+  const sleeperGeometry = new THREE.BoxGeometry(0.24, 0.12, sleeperLength);
   for (let i = 0; i < sleeperCount; i += 1) {
     const sleeper = new THREE.Mesh(sleeperGeometry, sleeperMaterial);
-    sleeper.position.set(-railLength / 2 + i * (railLength / Math.max(sleeperCount - 1, 1)), 0.08, 0);
-    sleeper.rotation.y = Math.PI / 2;
+    const along = -railLength / 2 + i * (railLength / Math.max(sleeperCount - 1, 1));
+    sleeper.position.set(along, profileY(profile, along) + 0.02, crossCenter);
     railGroup.add(sleeper);
   }
   const corridorMaterial = new THREE.LineBasicMaterial({ color: 0x49534f, transparent: true, opacity: 0.55 });
@@ -320,6 +342,30 @@ function createRailOverlay(length, width) {
   ];
   const corridor = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), corridorMaterial);
   railGroup.add(corridor);
+}
+
+function fallbackRailProfile(length) {
+  return Array.from({ length: 31 }, (_, index) => {
+    const x = -length / 2 + (length * index) / 30;
+    return [x, 0, 0];
+  });
+}
+
+function profileY(profile, along) {
+  let nearest = profile[0];
+  let best = Infinity;
+  for (const point of profile) {
+    const distance = Math.abs(point[0] - along);
+    if (distance < best) {
+      nearest = point;
+      best = distance;
+    }
+  }
+  return nearest[1] * 1.35 + 0.22;
+}
+
+function toRailVector(profilePoint, offset) {
+  return new THREE.Vector3(profilePoint[0], profilePoint[1] * 1.35 + 0.32, profilePoint[2] + offset);
 }
 
 function drawPathsAndDrones(paths) {
@@ -392,12 +438,28 @@ function updateProfessionalPanels(data) {
   modelFormula.textContent = `${data.optimizer.formula}. Objetivo: ${data.optimizer.objective}. Ganancia estimada: ${data.optimizer.coverageGainPct}%.`;
   gnssText.textContent = `${data.gnss.sovereignty} Precision: ${data.gnss.absoluteAccuracy}. Repetibilidad: ${data.gnss.relativeRepeatability}.`;
   reportSummary.textContent = `${data.report.recommendation}. ${data.metrics.anomaly.message}`;
+  const railModel = data.track?.railModel;
+  railModelText.textContent = railModel
+    ? `Centro transversal ${railModel.crossCenterM} m, ancho UIC ${railModel.gaugeM} m. Fuente: ${railModel.source}.`
+    : 'No hay puntos suficientes para ajustar la via; se usa geometria auxiliar.';
+  renderSemanticLegend(data.metrics.semanticStats ?? {});
 }
 
 function renderPassList(paths) {
   const count = Number(passCount.value);
   passList.innerHTML = paths.slice(0, count).map((path) => (
-    `<div class="pass-item"><span class="pass-dot" style="background:${path.color}"></span><span>${path.name}</span></div>`
+    `<div class="pass-item"><span class="pass-dot" style="background:${path.color}"></span><span><strong>${path.name}</strong><small>${path.objective ?? ''} · solape ${path.overlapPct ?? '--'}% · bateria ${path.batteryPct ?? '--'}% · residual ${Math.round((path.residualFactor ?? 1) * 100)}%</small></span></div>`
+  )).join('');
+}
+
+function renderSemanticLegend(stats) {
+  const entries = Object.entries(stats);
+  if (!entries.length) {
+    semanticLegend.innerHTML = '<p>La leyenda se calcula al analizar la nube.</p>';
+    return;
+  }
+  semanticLegend.innerHTML = entries.map(([, item]) => (
+    `<div class="semantic-row"><span class="semantic-swatch" style="background:${item.color}"></span><span>${item.label}<strong>${item.pct}%</strong></span></div>`
   )).join('');
 }
 

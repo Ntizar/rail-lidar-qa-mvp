@@ -255,6 +255,27 @@ El MVP simula un caso realista:
 
 Esa incidencia no perfecta se marca en rojo para que el sistema recomiende una repeticion localizada, no repetir toda la campana.
 
+## Colores de la nube de puntos
+
+La version actual no muestra solo el color bruto IRC. El backend clasifica los puntos en grupos visuales para que la demo sea mas legible:
+
+- Verde: vegetacion y arbolado, estimado por respuesta NIR alta en el tile IRC.
+- Gris oscuro: via/plataforma, banda lineal no vegetal sobre el eje ferroviario estimado.
+- Ocre: balasto o explanacion junto a la via.
+- Marron: terreno natural y talud.
+- Azul oscuro: sombra, agua u oclusion, zonas con mas riesgo de huecos.
+
+La seccion de via se ajusta a los puntos no vegetales de plataforma y balasto. En el tramo `4212`, el centro transversal estimado queda en torno a `-0.28 m`, por lo que los carriles y traviesas se dibujan sobre la banda de puntos visible y no sobre un centro geometrico inventado.
+
+## Que aporta cada dron
+
+Cada pasada muestra ahora objetivo, solape, bateria y factor de error residual:
+
+- P1: eje de via, perfil longitudinal de carriles, traviesas y plataforma.
+- P2: flanco derecho, talud, cuneta y sombras de banqueta.
+- P3: flanco izquierdo, vegetacion proxima y cierre de huecos.
+- P4: pasada adaptativa hacia celdas rojas tras el paso de bateadora.
+
 ## GNSS y soberania
 
 La narrativa tecnica usa una pila europea:

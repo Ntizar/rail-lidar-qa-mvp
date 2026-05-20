@@ -175,10 +175,22 @@ button:hover {
 .pass-item {
   display: grid;
   grid-template-columns: 12px 1fr;
-  align-items: center;
+  align-items: start;
   gap: 8px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.pass-item strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.pass-item small {
+  display: block;
+  margin-top: 2px;
+  line-height: 1.35;
 }
 
 .pass-dot {
@@ -314,6 +326,34 @@ button:hover {
 
 .legend-swatch.red {
   background: var(--red);
+}
+
+.semantic-list {
+  display: grid;
+  gap: 9px;
+}
+
+.semantic-row {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 8px;
+  align-items: start;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.semantic-row strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink);
+}
+
+.semantic-swatch {
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border-radius: 3px;
 }
 
 @media (max-width: 980px) {
