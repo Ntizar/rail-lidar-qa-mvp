@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Informe RailLiDAR QA</title>
+<style>body{font-family:Segoe UI,Arial,sans-serif;max-width:980px;margin:40px auto;padding:0 24px;color:#18211f;line-height:1.55}h1,h2{color:#005d52}.bullet{margin-left:18px}</style>
+</head><body><h1>Informe QA RailLiDAR tras bateadora</h1>
+<br>
+<h2>Resumen ejecutivo</h2>
+<br>
+<p class='bullet'>- Archivo analizado: PNOA_2020_AND-C_364-4210_ORT-CLA-RGB.laz</p>
+<p class='bullet'>- Puntos totales del tile: 14,248,992</p>
+<p class='bullet'>- Puntos usados en el corredor de control: 10,922</p>
+<p class='bullet'>- Ventana de control: 80.0 m x 40.0 m</p>
+<p class='bullet'>- Score QA final: 96/100, estado aceptable con incidencia menor</p>
+<p class='bullet'>- Celdas verdes: 193, amarillas: 0, rojas: 7</p>
+<br>
+<h2>Estado antes del paso de bateadora</h2>
+<br>
+<p>La via simulada presenta irregularidad de nivelacion y alineacion local. El balasto tiene densidad heterogenea en el entorno del talud, con zonas de sombra LiDAR y variacion de cota que obligan a planificar pasadas laterales de dron.</p>
+<br>
+<h2>Paso de bateadora y drones</h2>
+<br>
+<p>La bateadora avanza sobre el eje estimado de via. El eje se ha ajustado matematicamente mediante PCA 2D sobre el ROI LiDAR para que la geometria de la via quede apoyada sobre la linea principal de puntos del corredor.</p>
+<br>
+<p>Los drones se planifican con el modelo: e_i,k+1 = max(e_floor, e_i,k * (1 - g_k * visibilidad_i,k)) + anomalia_i. La funcion objetivo es min Σ(error_residual celda) con restricciones de bateria, solape y distancia a bateadora. La incertidumbre inicial equivalente es 72 mm y baja a 30.2 mm tras las pasadas, con una ganancia teorica de cobertura del 74.7%.</p>
+<br>
+<h2>Estado despues del paso de bateadora</h2>
+<br>
+<p>La geometria general mejora: la mayoria de celdas quedan en verde y el balasto aparece mas continuo. Se simula una incidencia realista no perfecta: La bateadora corrige la mayor parte del tramo, pero queda una zona con error residual y balasto irregular que requiere repeticion localizada.</p>
+<br>
+<p>La incidencia queda localizada en s=14.4 m y offset=-4.8 m respecto al eje de via, con radio de 5.4 m. La recomendacion es repetir una pasada adaptativa y revisar el bateo en esa zona concreta.</p>
+<br>
+<h2>GNSS, precision y soberania</h2>
+<br>
+<p>La pila propuesta usa Galileo Open Service, Galileo HAS PPP, EGNOS integridad operacional, IMU embarcada, referencia rigida bateadora. La precision absoluta esperable se comunica como decimetrica en posicionamiento GNSS/HAS nominal; no se promete milimetria absoluta. La repetibilidad local se defiende como centimetrica local en simulacion al fusionar pasadas y referencia rigida.</p>
+<br>
+<p>El enfoque de soberania es: pila europea: constelacion Galileo, correcciones HAS y capa EGNOS para integridad; procesado local sin subir nube de puntos. El modelo de fusion se resume como x_fusion = argmin Σ ||T_k p_k - p_ref||² + λ||Δtrayectoria||², con trazabilidad temporal GNSS/IMU.</p>
+<br>
+<h2>Decision operativa</h2>
+<br>
+<p>Aceptar el tramo como demostracion QA general, pero abrir una orden de revision localizada para la zona marcada en rojo tras el paso de bateadora. No se repite toda la campana LiDAR: solo la ventana adaptativa propuesta por el planificador.</p></body></html>

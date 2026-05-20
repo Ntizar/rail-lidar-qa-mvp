@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RailLiDAR QA MVP</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="control-panel" aria-label="Controles de analisis">
+        <div class="brand-block">
+          <div class="brand-mark">RL</div>
+          <div>
+            <h1>RailLiDAR QA</h1>
+            <p>Gemelo digital local para validar cobertura LiDAR.</p>
+          </div>
+        </div>
+
+        <label for="fileSelect">Archivo LAZ/LAS</label>
+        <select id="fileSelect"></select>
+
+        <div class="input-grid">
+          <label>
+            Muestra
+            <input id="sampleInput" type="number" min="5000" max="200000" step="5000" value="70000" />
+          </label>
+          <label>
+            Rejilla m
+            <input id="gridInput" type="number" min="1" max="25" step="0.5" value="4" />
+          </label>
+          <label>
+            Largo m
+            <input id="lengthInput" type="number" min="10" max="250" step="5" value="80" />
+          </label>
+          <label>
+            Ancho m
+            <input id="widthInput" type="number" min="10" max="160" step="5" value="40" />
+          </label>
+        </div>
+
+        <button id="analyzeBtn" class="primary-button">Analizar LAZ</button>
+
+        <div class="button-row">
+          <button id="animateBtn" type="button">Animar pasadas</button>
+          <button id="qaToggleBtn" type="button">QA visible</button>
+        </div>
+
+        <div class="button-row">
+          <button id="reportBtn" type="button">Abrir informe</button>
+          <button id="resetViewBtn" type="button">Centrar vista</button>
+        </div>
+
+        <label for="passCount">Pasadas activas</label>
+        <select id="passCount">
+          <option value="1">1 pasada</option>
+          <option value="2">2 pasadas</option>
+          <option value="3" selected>3 pasadas</option>
+          <option value="4">4 pasadas</option>
+        </select>
+
+        <div class="pass-list" id="passList"></div>
+
+        <div class="method-block">
+          <h2>Modelo matematico</h2>
+          <p id="modelFormula">El planificador se calcula al analizar la nube.</p>
+        </div>
+      </aside>
+
+      <main class="viewer-shell">
+        <div id="viewer"></div>
+        <div class="viewer-status" id="viewerStatus">Preparado para analizar.</div>
+      </main>
+
+      <aside class="metrics-panel" aria-label="Metricas QA">
+        <div class="qa-header">
+          <span id="qaLamp" class="qa-lamp neutral"></span>
+          <div>
+            <h2 id="qaTitle">Sin analisis</h2>
+            <p id="qaSubtitle">Carga el archivo para calcular cobertura.</p>
+          </div>
+        </div>
+
+        <div class="score-block">
+          <div id="qaScore" class="score-value">--</div>
+          <div class="score-label">score QA</div>
+        </div>
+
+        <dl class="metric-list" id="metricList"></dl>
+
+        <div class="metric-section">
+          <h2>GNSS europeo</h2>
+          <p id="gnssText">Galileo/HAS/EGNOS se mostrara tras el analisis.</p>
+        </div>
+
+        <div class="metric-section">
+          <h2>Informe automatico</h2>
+          <p id="reportSummary">El informe se genera despues de analizar el LAZ.</p>
+        </div>
+
+        <div class="legend">
+          <div><span class="legend-swatch green"></span> Cobertura suficiente</div>
+          <div><span class="legend-swatch yellow"></span> Cobertura irregular</div>
+          <div><span class="legend-swatch red"></span> Hueco o baja densidad</div>
+        </div>
+      </aside>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

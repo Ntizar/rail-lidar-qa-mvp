@@ -1,0 +1,9 @@
+{
+  "name": "rail-lidar-qa-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MVP local para validar capturas LiDAR ferroviarias con Three.js.",
+  "dependencies": {
+    "three": "^0.164.1"
+  }
+}
